@@ -3,3 +3,8 @@
 /run-data/
 /build/
 /.gradle/
+
+# Local build diagnostics
+*.log
+build_out.txt
+build_err.txt

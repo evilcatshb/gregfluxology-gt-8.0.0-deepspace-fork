@@ -1,57 +1,67 @@
 // Copyright (C) 2018 DBot
-
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-// of the Software, and to permit persons to whom the Software is furnished to do so,
-// subject to the following conditions:
-
-// The above copyright notice and this permission notice shall be included in all copies
-// or substantial portions of the Software.
-
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
-// PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
-// FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-// OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-// DEALINGS IN THE SOFTWARE.
+// MIT License - see LICENSE file
 package gregfluxology.cap;
 
+import com.gregtechceu.gtceu.api.capability.GTCapability;
 import com.gregtechceu.gtceu.api.capability.IEnergyContainer;
-import com.gregtechceu.gtceu.api.capability.compat.CapabilityCompatProvider;
 import com.gregtechceu.gtceu.api.capability.compat.FeCompat;
-import com.gregtechceu.gtceu.api.capability.forge.GTCapability;
+import com.gregtechceu.gtceu.api.machine.MetaMachine;
 import com.gregtechceu.gtceu.common.pipelike.cable.EnergyNetHandler;
 import gregfluxology.GFyConfig;
 import gregfluxology.util.GFyUtility;
 import net.minecraft.core.Direction;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraftforge.common.capabilities.Capability;
 import net.minecraftforge.common.capabilities.ForgeCapabilities;
 import net.minecraftforge.common.capabilities.ICapabilityProvider;
 import net.minecraftforge.common.util.LazyOptional;
 import net.minecraftforge.energy.IEnergyStorage;
-import org.jetbrains.annotations.NotNull;
 
-public class FEToEUProvider extends CapabilityCompatProvider {
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 
-    public FEToEUProvider(ICapabilityProvider upValue) {
-        super(upValue);
+/**
+ * Attaches a FE-input wrapper to GT machine block entities, allowing Forge Energy sources
+ * to push power INTO GT machines.
+ *
+ * IMPORTANT: We must NOT use CapabilityCompatProvider / getUpvalueCapability() here.
+ * That calls the block entity's own getCapability(), which would re-enter CapabilityDispatcher
+ * and hit GTCEu's EUToFEProvider, which calls getUpvalueCapability(ForgeCapabilities.ENERGY),
+ * which re-enters us — infinite mutual recursion -> StackOverflowError.
+ *
+ * Instead we query the IEnergyContainer directly via MetaMachine.getCapability(), which
+ * goes straight to the machine's trait list and never touches CapabilityDispatcher.
+ */
+public class FEToEUProvider implements ICapabilityProvider {
+
+    private final BlockEntity blockEntity;
+
+    public FEToEUProvider(BlockEntity blockEntity) {
+        this.blockEntity = blockEntity;
     }
 
     @Override
-    @NotNull
-    public <T> LazyOptional<T> getCapability(@NotNull Capability<T> capability, Direction facing) {
+    @Nonnull
+    public <T> LazyOptional<T> getCapability(@Nonnull Capability<T> capability, @Nullable Direction facing) {
         if (capability != ForgeCapabilities.ENERGY) {
             return LazyOptional.empty();
         }
 
-        LazyOptional<IEnergyContainer> energyContainer = getUpvalueCapability(GTCapability.CAPABILITY_ENERGY_CONTAINER,
-                facing);
-        return energyContainer.isPresent() ?
-                ForgeCapabilities.ENERGY.orEmpty(capability,
-                        LazyOptional.of(() -> new FEEnergyWrapper(energyContainer.resolve().get(), facing))) :
-                LazyOptional.empty();
+        // Get the MetaMachine - if this is not a GT machine BE, bail out immediately.
+        MetaMachine machine = MetaMachine.getMachine(blockEntity.getLevel(), blockEntity.getBlockPos());
+        if (machine == null) {
+            return LazyOptional.empty();
+        }
+
+        // Query IEnergyContainer directly from the machine traits - bypasses CapabilityDispatcher
+        // entirely and avoids the EUToFEProvider <-> FEToEUProvider infinite recursion.
+        LazyOptional<IEnergyContainer> energyContainer =
+                MetaMachine.getCapability(machine, GTCapability.CAPABILITY_ENERGY_CONTAINER, facing);
+
+        return energyContainer.isPresent()
+                ? ForgeCapabilities.ENERGY.orEmpty(capability,
+                        LazyOptional.of(() -> new FEEnergyWrapper(energyContainer.resolve().get(), facing)))
+                : LazyOptional.empty();
     }
 
     public static class FEEnergyWrapper implements IEnergyStorage {
@@ -66,12 +76,10 @@ public class FEToEUProvider extends CapabilityCompatProvider {
 
         @Override
         public int receiveEnergy(int maxReceive, boolean simulate) {
-            // TODO: add a config here to remove voltage restrictions.
-
             if (!canReceive()) return 0;
 
             if (maxReceive == 1 && simulate) {
-                // Damn you mekanism
+                // Damn you mekanism - probe for whether any energy can be received
                 return energyContainer.getEnergyCanBeInserted() > 0L ? 1 : 0;
             }
 
@@ -81,11 +89,8 @@ public class FEToEUProvider extends CapabilityCompatProvider {
             maxIn = Math.min(missing, maxIn);
             long maxAmp = Math.min(energyContainer.getInputAmperage(), maxIn / voltage);
 
-            if (GFyConfig.ignoreCableCapacity && energyContainer instanceof EnergyNetHandler) { // TODO: add a config
-                // here to remove this
-                // check, thus
-                // protecting the cables
-                // from burning.
+            if (GFyConfig.ignoreCableCapacity && energyContainer instanceof EnergyNetHandler) {
+                // Ignore cable amperage cap (cables may burn - same behaviour as base CEu)
                 maxIn = maxReceive / FeCompat.ratio(true);
                 maxAmp = maxIn / voltage;
             }
@@ -101,7 +106,7 @@ public class FEToEUProvider extends CapabilityCompatProvider {
 
         @Override
         public int extractEnergy(int maxExtract, boolean simulate) {
-            return 0; // this is done in base CEu
+            return 0; // EU->FE extraction is handled by GTCEu's own EUToFEProvider
         }
 
         @Override
@@ -116,7 +121,7 @@ public class FEToEUProvider extends CapabilityCompatProvider {
 
         @Override
         public boolean canExtract() {
-            return false; // this is done in base CEu
+            return false; // EU->FE extraction handled by GTCEu
         }
 
         @Override

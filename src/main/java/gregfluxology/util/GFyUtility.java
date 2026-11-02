@@ -1,6 +1,6 @@
 package gregfluxology.util;
 
-import com.gregtechceu.gtceu.api.block.IMachineBlock;
+import com.gregtechceu.gtceu.api.block.MetaMachineBlock;
 import com.gregtechceu.gtceu.api.capability.compat.FeCompat;
 import com.gregtechceu.gtceu.common.block.CableBlock;
 import net.minecraft.world.level.block.Block;
@@ -8,7 +8,6 @@ import net.minecraft.world.level.block.Block;
 public class GFyUtility {
 
     /**
-     * Copied from GTCEu
      * Safely cast a Long to an Int without overflow.
      *
      * @param v The Long value to cast to an Int.
@@ -23,6 +22,6 @@ public class GFyUtility {
     }
 
     public static boolean isGTMachine(Block block) {
-        return block instanceof IMachineBlock || block instanceof CableBlock;
+        return block instanceof MetaMachineBlock || block instanceof CableBlock;
     }
 }
